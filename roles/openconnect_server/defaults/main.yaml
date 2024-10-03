@@ -1,0 +1,18 @@
+---
+openconnect_dir: "/etc/ocserv"
+openconnect_clients_dir: "/etc/ocserv/clients"
+ocserv_network: 10.18.18.0/24
+ocserv_port: 44535
+ethernet_ip: 10.10.10.22
+dns: 8.8.8.8
+route_one_subnet: 172.17.0.0/255.255.255.0
+organization: "MyCompany"
+
+camouflage_secret: "login-access-secret"
+version: "1.3.0"
+config_url: "https://gitlab.com/openconnect/ocserv/-/raw/{{ version }}/doc/sample.config"
+local_creds_folder: "./creds/"
+clients_to_add: ["dmitry"]
+clients_to_remove: []
+get_all_users_certs: False
+...

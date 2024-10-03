@@ -1,0 +1,14 @@
+---
+- name: Force systemd to reread configs
+  ansible.builtin.systemd:
+    daemon_reload: yes
+  listen: "reload systemd"
+  become: yes
+
+- name: Restart ocserv service
+  ansible.builtin.systemd:
+    name: ocserv
+    state: restarted
+  listen: "restart ocserv"
+  become: yes
+...

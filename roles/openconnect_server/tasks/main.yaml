@@ -1,0 +1,384 @@
+---
+- block:
+  - name: Install dependencies
+    ansible.builtin.apt:
+      name: [git, build-essential, libgnutls28-dev, libev-dev, autoconf, automake, libtool, libpam0g-dev,
+           liblz4-dev, libseccomp-dev, libreadline-dev, libnl-route-3-dev, libkrb5-dev, libradcli-dev,
+           libcurl4-gnutls-dev, libcjose-dev, libjansson-dev, liboath-dev, libprotobuf-c-dev, libtalloc-dev,
+           libhttp-parser-dev, protobuf-c-compiler, gperf, iperf3, lcov, libuid-wrapper, libpam-wrapper,
+           libnss-wrapper, libsocket-wrapper, gss-ntlmssp, haproxy, iputils-ping, freeradius, gawk, gnutls-bin,
+           iproute2, yajl-tools, tcpdump, ipcalc-ng, expect]
+      state: latest
+      update_cache: yes
+      cache_valid_time: 86400
+    tags:
+      - install
+
+  - name: Check if ocserv directory exists
+    stat:
+      path: /opt/ocserv
+    register: ocserv_stat
+    tags:
+      - install
+
+  - name: Check current version of ocserv
+    command: git describe --tags
+    args:
+      chdir: /opt/ocserv
+    register: current_version
+    when: ocserv_stat.stat.exists
+    ignore_errors: yes
+    tags:
+      - install
+
+  - name: Display current version of ocserv
+    debug:
+      msg: "Current version of ocserv is: {{ current_version.stdout }}"
+    when: ocserv_stat.stat.exists
+    tags:
+      - install
+
+  - name: Remove existing ocserv directory if version does not match
+    file:
+      path: /opt/ocserv
+      state: absent
+    when: ocserv_stat.stat.exists and current_version.stdout != version
+    tags:
+      - install
+
+  - name: Clone ocserv repository
+    git:
+      repo: https://gitlab.com/openconnect/ocserv
+      dest: /opt/ocserv
+      version: "{{ version }}"
+    when: not ocserv_stat.stat.exists or current_version.stdout != version
+    tags:
+      - install
+
+  - name: Change to ocserv directory
+    command: /bin/bash -c "autoreconf -fvi"
+    args:
+      chdir: /opt/ocserv
+    when: not ocserv_stat.stat.exists or current_version.stdout != version
+    tags:
+      - install
+
+  - name: Configure ocserv
+    command: /bin/bash -c "./configure"
+    args:
+      chdir: /opt/ocserv
+    when: not ocserv_stat.stat.exists or current_version.stdout != version
+    tags:
+      - install
+
+  - name: Build ocserv
+    command: /bin/bash -c "make"
+    args:
+      chdir: /opt/ocserv
+    when: not ocserv_stat.stat.exists or current_version.stdout != version
+    tags:
+      - install
+
+  - name: Install ocserv
+    command: /bin/bash -c "make install"
+    args:
+      chdir: /opt/ocserv
+    when: not ocserv_stat.stat.exists or current_version.stdout != version
+    tags:
+      - install
+
+  - name: Create Ocserv directory
+    ansible.builtin.file:
+      path: "{{ openconnect_dir }}"
+      state: directory
+      owner: root
+      group: root
+      mode: 0644
+    when: not ocserv_stat.stat.exists
+    tags:
+      - install
+
+  - name: Generate main server key
+    ansible.builtin.shell: "certtool --generate-privkey --outfile {{ openconnect_dir }}/ocserv-key.pem --bits 3072"
+    args:
+      creates: "{{ openconnect_dir }}/ocserv-key.pem"
+    when: not ocserv_stat.stat.exists
+    tags:
+      - install
+
+  - name: Copy ca template
+    ansible.builtin.template:
+      src: ca-cert.cfg.j2
+      dest: "{{ openconnect_dir }}/ca.tmpl"
+      owner: root
+      group: root
+      mode: 0644
+    when: not ocserv_stat.stat.exists
+    tags:
+      - install
+
+  - name: Generate main server cert
+    ansible.builtin.shell: "certtool --generate-self-signed --load-privkey {{ openconnect_dir }}/ocserv-key.pem --template {{ openconnect_dir }}/ca.tmpl --outfile {{ openconnect_dir }}/ocserv-cert.pem"
+    args:
+      creates: "{{ openconnect_dir }}/ocserv-cert.pem"
+    when: not ocserv_stat.stat.exists
+    tags:
+      - install
+
+  - name: Copy dh config file
+    ansible.builtin.copy:
+      src: dh.conf
+      dest: "{{ openconnect_dir }}/dh.conf"
+      owner: root
+      group: root
+      mode: 0644
+    tags:
+      - install
+
+  - name: Generate dh.pem
+    ansible.builtin.shell: "certtool --generate-dh-params --load-privkey {{ openconnect_dir }}/dh.conf --outfile {{ openconnect_dir }}/dh.pem"
+    args:
+      creates: "{{ openconnect_dir }}/dh.pem"
+    when: not ocserv_stat.stat.exists
+    tags:
+      - install
+
+  - name: Create clients directory
+    ansible.builtin.file:
+      path: "{{ openconnect_clients_dir }}"
+      state: directory
+      owner: root
+      group: root
+      mode: 0644
+    tags:
+      - install
+
+  - name: Enable IPv4 traffic forwarding
+    ansible.posix.sysctl:
+      name: net.ipv4.ip_forward
+      value: 1
+      reload: yes
+    tags:
+      - install
+
+  - name: Copy Openconnect server config
+    ansible.builtin.template:
+      src: sample.conf.j2
+      dest: "{{ openconnect_dir }}/ocserv.conf"
+      owner: root
+      group: root
+      mode: 0644
+    register: template_result
+    tags:
+      - install
+
+  - name: Copy ocserv unit file
+    ansible.builtin.copy:
+      src: ocserv.service
+      dest: /etc/systemd/system/ocserv.service
+      owner: root
+      group: root
+      mode: 0644
+    tags:
+      - install
+
+  - name: Systemd daemon reload
+    ansible.builtin.command: systemctl daemon-reload
+    tags:
+      - install
+
+  - name: Enable and start ocserv service
+    ansible.builtin.systemd:
+      name: ocserv
+      enabled: yes
+      state: started
+    tags:
+      - install
+
+  - name: Restart ocserv
+    ansible.builtin.service:
+      name: ocserv
+      state: restarted
+    when: template_result.changed
+    tags:
+      - install
+
+  - name: IPTABLES SETUP
+    block:
+    - name: "Installing iptables-persistent"
+      ansible.builtin.apt:
+        update_cache: yes
+        name:
+          - iptables
+          - iptables-persistent
+          - netfilter-persistent
+
+    - name: POSTROUTING
+      ansible.builtin.iptables:
+        table: nat
+        chain: POSTROUTING
+        source: '{{ ocserv_network }}'
+        destination: '!{{ ocserv_network }}'
+        to_source: '{{ ethernet_ip }}'
+        jump: SNAT
+
+    - name: Allow incoming OpenVPN port
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: udp
+        destination_port: '{{ ocserv_port }}'
+        jump: ACCEPT
+
+    - name: Forward openvpn cidr
+      ansible.builtin.iptables:
+        chain: FORWARD
+        source: '{{ ocserv_network }}'
+        jump: ACCEPT
+
+    - name: Forward RELATED,ESTABLISHED
+      ansible.builtin.iptables:
+        chain: FORWARD
+        match: state
+        ctstate: RELATED,ESTABLISHED
+        jump: ACCEPT
+
+    - name: Save iptables rules
+      ansible.builtin.shell: netfilter-persistent save
+
+    - name: Start netfilter-persistent service
+      ansible.builtin.systemd:
+        name: netfilter-persistent
+        enabled: yes
+        state: restarted
+    tags:
+      - install
+      - iptables
+
+  # ADD CLIENTS
+  - name: Add new clients
+    block:
+    - name: Get existing directories
+      ansible.builtin.command: "ls {{ openconnect_clients_dir }}/"
+      register: existing_dirs
+      changed_when: false
+
+    - name: Set existing directories to a list
+      set_fact:
+        existing_clients: "{{ existing_dirs.stdout_lines | map('basename') | list }}"
+
+    - name: Filter clients_to_add
+      set_fact:
+        filtered_clients_to_add: "{{ clients_to_add | difference(existing_clients) }}"
+
+    - name: Display filtered clients to add
+      ansible.builtin.debug:
+        msg: "Filtered clients to add: {{ filtered_clients_to_add }}"
+
+    - name: Create clients directory
+      ansible.builtin.file:
+        path: "{{ openconnect_clients_dir }}/{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: 0644
+      loop: "{{ filtered_clients_to_add }}"
+      when: filtered_clients_to_add | length > 0
+
+    - name: Copy clients template
+      ansible.builtin.template:
+        src: client-cert.cfg.j2
+        dest: "{{ openconnect_clients_dir }}/{{ item }}/{{ item }}.cfg"
+        owner: root
+        group: root
+        mode: 0644
+      loop: "{{ filtered_clients_to_add }}"
+      when: filtered_clients_to_add | length > 0
+
+    - name: Generate random passwords for new clients
+      set_fact:
+        clients_with_passwords: "{{ clients_with_passwords | default([]) + [item + ':' + lookup('password', '/dev/null length=8 chars=ascii_letters,digits')] }}"
+      loop: "{{ filtered_clients_to_add }}"
+      when: filtered_clients_to_add | length > 0
+
+    - name: Record certificates passwords for new clients
+      ansible.builtin.shell: "echo {{ item.split(':')[1] }} > {{ openconnect_clients_dir }}/{{ item.split(':')[0] }}/{{ item.split(':')[0] }}-cert-pass.txt"
+      args:
+        creates: "{{ openconnect_clients_dir }}/{{ item.split(':')[0] }}/{{ item.split(':')[0] }}-cert-pass.txt"
+      with_items: "{{ clients_with_passwords }}"
+      when: filtered_clients_to_add | length > 0
+
+    - name: Generate main client key
+      ansible.builtin.shell: "certtool --generate-privkey --outfile {{ openconnect_clients_dir }}/{{ item }}/{{ item }}-privkey.pem"
+      args:
+        creates: "{{ openconnect_clients_dir }}/{{ item }}/{{ item }}-privkey.pem"
+      with_items: "{{ filtered_clients_to_add }}"
+      when: filtered_clients_to_add | length > 0
+
+    - name: Generate main client certificate
+      ansible.builtin.shell: "certtool --generate-certificate --load-privkey {{ openconnect_clients_dir }}/{{ item }}/{{ item }}-privkey.pem --load-ca-certificate {{ openconnect_dir }}/ocserv-cert.pem --load-ca-privkey {{ openconnect_dir }}/ocserv-key.pem --template {{ openconnect_clients_dir }}/{{ item }}/{{ item }}.cfg --outfile {{ openconnect_clients_dir }}/{{ item }}/{{ item }}-cert.pem"
+      args:
+        creates: "{{ openconnect_clients_dir }}/{{ item }}/{{ item }}-cert.pem"
+      with_items: "{{ filtered_clients_to_add }}"
+      when: filtered_clients_to_add | length > 0
+
+    - name: Generate p12 client certificate
+      ansible.builtin.shell: "certtool --to-p12 --load-privkey {{ openconnect_clients_dir }}/{{ item.split(':')[0] }}/{{ item.split(':')[0] }}-privkey.pem --load-certificate {{ openconnect_clients_dir }}/{{ item.split(':')[0] }}/{{ item.split(':')[0] }}-cert.pem --pkcs-cipher aes-256 --outfile {{ openconnect_clients_dir }}/{{ item.split(':')[0] }}/{{ item.split(':')[0] }}.p12 --outder --password={{ item.split(':')[1] }} --p12-name={{ item.split(':')[0] }}"
+      args:
+        creates: "{{ openconnect_clients_dir }}/{{ item.split(':')[0] }}/{{ item.split(':')[0] }}.p12"
+      with_items: "{{ clients_with_passwords }}"
+      when: filtered_clients_to_add | length > 0
+
+    - name: Generate p12 client certificate for iOS
+      ansible.builtin.shell: "openssl pkcs12 -export -inkey {{ openconnect_clients_dir }}/{{ item.split(':')[0] }}/{{ item.split(':')[0] }}-privkey.pem -in {{ openconnect_clients_dir }}/{{ item.split(':')[0] }}/{{ item.split(':')[0] }}-cert.pem -name {{ item.split(':')[0] }} -certfile {{ openconnect_dir }}/ocserv-cert.pem -caname 142.54.33.11 -out {{ openconnect_clients_dir }}/{{ item.split(':')[0] }}/{{ item.split(':')[0] }}-ios.p12 -passout pass:{{ item.split(':')[1] }} --legacy"
+      args:
+        creates: "{{ openconnect_clients_dir }}/{{ item.split(':')[0] }}/{{ item.split(':')[0] }}-ios.p12"
+      with_items: "{{ clients_with_passwords }}"
+      when: filtered_clients_to_add | length > 0
+
+    - name: Get users certificates .p12
+      ansible.builtin.fetch:
+        src: "{{ openconnect_clients_dir }}/{{ item }}/{{ item }}.p12"
+        dest: "{{ local_creds_folder }}/{{ item }}/"
+        flat: yes
+      with_items: "{{ clients_to_add if get_all_users_certs else filtered_clients_to_add }}"
+      when: (clients_to_add | length > 0 and get_all_users_certs) or (filtered_clients_to_add | length > 0 and not get_all_users_certs)
+
+    - name: Get users certificates .p12 for iOS
+      ansible.builtin.fetch:
+        src: "{{ openconnect_clients_dir }}/{{ item }}/{{ item }}-ios.p12"
+        dest: "{{ local_creds_folder }}/{{ item }}/"
+        flat: yes
+      with_items: "{{ clients_to_add if get_all_users_certs else filtered_clients_to_add }}"
+      when: (clients_to_add | length > 0 and get_all_users_certs) or (filtered_clients_to_add | length > 0 and not get_all_users_certs)
+
+    - name: Get cert-passwords
+      ansible.builtin.fetch:
+        src: "{{ openconnect_clients_dir }}/{{ item }}/{{ item }}-cert-pass.txt"
+        dest: "{{ local_creds_folder }}/{{ item }}/"
+        flat: yes
+      with_items: "{{ clients_to_add if get_all_users_certs else filtered_clients_to_add }}"
+      when: (clients_to_add | length > 0 and get_all_users_certs) or (filtered_clients_to_add | length > 0 and not get_all_users_certs)
+
+    tags:
+      - add_clients
+
+  # REMOVE CLIENTS
+  - name: Remove clients
+    block:
+    - name: Disconnect clients
+      command: "occtl disconnect user {{ item }}"
+      with_items: "{{ clients_to_remove }}"
+      ignore_errors: yes
+      when: clients_to_remove | length > 0
+
+    - name: Remove clients dir
+      file:
+        path: "{{ openconnect_clients_dir}}/{{ item }}"
+        state: absent
+      with_items: "{{ clients_to_remove }}"
+      when: clients_to_remove | length > 0
+    tags:
+      - remove_clients
+
+  become: yes
+...

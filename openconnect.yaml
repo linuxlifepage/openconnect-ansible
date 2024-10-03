@@ -1,0 +1,6 @@
+---
+- hosts: 
+    - openconnect_server
+  roles:
+    - openconnect_server
+...
